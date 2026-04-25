@@ -40,6 +40,5 @@ export const config = {
     apiKey: env('ALI_BAILIAN_API_KEY'),
     ocrModel: process.env.ALI_BAILIAN_OCR_MODEL || 'qwen-vl-plus',
     chatModel: process.env.ALI_BAILIAN_CHAT_MODEL || 'qwen-plus',
-    baseUrl: 'https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation',
   },
 };
