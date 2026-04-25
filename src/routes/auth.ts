@@ -4,6 +4,7 @@ import { db } from '../db';
 import { config } from '../config';
 import { sendSmsCode } from '../utils/ali';
 import { success, fail } from '../utils/response';
+import { authMiddleware, AuthRequest } from '../middleware/auth';
 
 const router = Router();
 
@@ -63,6 +64,15 @@ router.post('/login', (req, res) => {
   });
 
   success(res, { token, user: { id: user.id, phone: user.phone } });
+});
+
+// GET /api/auth/me
+router.get('/me', authMiddleware, (req: AuthRequest, res) => {
+  const user = db.prepare('SELECT id, phone FROM users WHERE id = ?').get(req.userId!) as any;
+  if (!user) {
+    return fail(res, 'User not found', 401);
+  }
+  success(res, user);
 });
 
 export default router;

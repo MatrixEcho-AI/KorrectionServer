@@ -163,7 +163,7 @@ router.post('/:id/recommend', async (req: AuthRequest, res) => {
   const cats = db.prepare('SELECT id, name, level FROM categories WHERE user_id = ?').all(req.userId!) as any[];
   const catList = cats.map((c) => `${c.id}:${c.name}(L${c.level})`).join(', ');
 
-  const tags = db.prepare('SELECT t.id, t.name FROM tags t JOIN categories c ON t.subject_id = c.id WHERE c.id = ? OR c.parent_id = ?').all(q.category_id, q.category_id) as any[];
+  const tags = db.prepare('SELECT id, name FROM tags WHERE subject_id = ?').all(q.subject_id) as any[];
   const tagList = tags.map((t) => `${t.id}:${t.name}`).join(', ');
 
   const systemPrompt =

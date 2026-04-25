@@ -1,19 +1,23 @@
-import Database from 'better-sqlite3';
-import { config } from '../config';
-import fs from 'fs';
-import path from 'path';
-
-const dbDir = path.dirname(config.db.path);
-if (!fs.existsSync(dbDir)) {
-  fs.mkdirSync(dbDir, { recursive: true });
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.db = void 0;
+exports.initDb = initDb;
+const better_sqlite3_1 = __importDefault(require("better-sqlite3"));
+const config_1 = require("../config");
+const fs_1 = __importDefault(require("fs"));
+const path_1 = __importDefault(require("path"));
+const dbDir = path_1.default.dirname(config_1.config.db.path);
+if (!fs_1.default.existsSync(dbDir)) {
+    fs_1.default.mkdirSync(dbDir, { recursive: true });
 }
-
-export const db: Database.Database = new Database(config.db.path);
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
-
-export function initDb() {
-  db.exec(`
+exports.db = new better_sqlite3_1.default(config_1.config.db.path);
+exports.db.pragma('journal_mode = WAL');
+exports.db.pragma('foreign_keys = ON');
+function initDb() {
+    exports.db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       phone TEXT NOT NULL UNIQUE,
@@ -113,3 +117,4 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_redo_question ON redo_sessions(question_id);
   `);
 }
+//# sourceMappingURL=index.js.map
