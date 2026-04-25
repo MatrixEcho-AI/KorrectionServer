@@ -14,6 +14,7 @@ router.get('/', (req: AuthRequest, res) => {
   const status = req.query.status as string | undefined;
   const categoryId = req.query.category_id ? Number(req.query.category_id) : undefined;
   const tagId = req.query.tag_id ? Number(req.query.tag_id) : undefined;
+  const subjectId = req.query.subject_id ? Number(req.query.subject_id) : undefined;
   const page = Math.max(1, Number(req.query.page) || 1);
   const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 20));
   const offset = (page - 1) * pageSize;
@@ -21,6 +22,10 @@ router.get('/', (req: AuthRequest, res) => {
   let where = 'WHERE q.user_id = ? AND q.status != \'deleted\'';
   const params: any[] = [userId];
 
+  if (subjectId) {
+    where += ' AND q.subject_id = ?';
+    params.push(subjectId);
+  }
   if (status) {
     where += ' AND q.status = ?';
     params.push(status);
@@ -63,13 +68,14 @@ router.get('/', (req: AuthRequest, res) => {
 
 // POST /api/questions
 router.post('/', (req: AuthRequest, res) => {
-  const { category_id } = req.body;
+  const { category_id, subject_id } = req.body;
   if (!category_id) {
     return fail(res, 'category_id is required');
   }
+  const subjectId = subject_id ? Number(subject_id) : 0;
   const result = db
-    .prepare('INSERT INTO questions (user_id, category_id, status) VALUES (?, ?, ?)')
-    .run(req.userId!, category_id, 'photo');
+    .prepare('INSERT INTO questions (user_id, category_id, subject_id, status) VALUES (?, ?, ?, ?)')
+    .run(req.userId!, category_id, subjectId, 'photo');
   success(res, { id: result.lastInsertRowid });
 });
 

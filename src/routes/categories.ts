@@ -8,19 +8,28 @@ router.use(authMiddleware);
 
 // GET /api/categories
 router.get('/', (req: AuthRequest, res) => {
-  const rows = db.prepare('SELECT * FROM categories WHERE user_id = ? ORDER BY sort_order, id').all(req.userId!) as any[];
+  const subjectId = req.query.subject_id ? Number(req.query.subject_id) : undefined;
+  let sql = 'SELECT * FROM categories WHERE user_id = ?';
+  const params: any[] = [req.userId!];
+  if (subjectId) {
+    sql += ' AND subject_id = ?';
+    params.push(subjectId);
+  }
+  sql += ' ORDER BY sort_order, id';
+  const rows = db.prepare(sql).all(...params) as any[];
   success(res, rows);
 });
 
 // POST /api/categories
 router.post('/', (req: AuthRequest, res) => {
-  const { parent_id = 0, name } = req.body;
+  const { parent_id = 0, subject_id, name } = req.body;
   if (!name || typeof name !== 'string' || name.trim().length === 0) {
     return fail(res, 'Name is required');
   }
 
   const parentId = Number(parent_id);
   let level = 1;
+  let subjectId = subject_id ? Number(subject_id) : 0;
 
   if (parentId !== 0) {
     const parent = db.prepare('SELECT * FROM categories WHERE id = ? AND user_id = ?').get(parentId, req.userId!) as any;
@@ -28,6 +37,7 @@ router.post('/', (req: AuthRequest, res) => {
       return fail(res, 'Parent not found');
     }
     level = parent.level + 1;
+    subjectId = parent.subject_id;
     if (level > 10) {
       return fail(res, 'Max level exceeded (10)');
     }
@@ -41,6 +51,14 @@ router.post('/', (req: AuthRequest, res) => {
     // 当前parent已经是第 depth 层子章节（root是科目），再加当前节点就是 depth+1
     if (depth >= 8) {
       return fail(res, 'Max sub-chapter depth exceeded (8)');
+    }
+  } else {
+    if (!subjectId) {
+      return fail(res, 'subject_id is required for root category');
+    }
+    const sub = db.prepare('SELECT * FROM subjects WHERE id = ? AND user_id = ?').get(subjectId, req.userId!) as any;
+    if (!sub) {
+      return fail(res, 'Subject not found');
     }
   }
 
@@ -57,8 +75,8 @@ router.post('/', (req: AuthRequest, res) => {
     .get(req.userId!, parentId) as any;
 
   const result = db
-    .prepare('INSERT INTO categories (user_id, parent_id, name, level, sort_order) VALUES (?, ?, ?, ?, ?)')
-    .run(req.userId!, parentId, name.trim(), level, (maxOrder?.m || 0) + 1);
+    .prepare('INSERT INTO categories (user_id, parent_id, subject_id, name, level, sort_order) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(req.userId!, parentId, subjectId, name.trim(), level, (maxOrder?.m || 0) + 1);
 
   success(res, { id: result.lastInsertRowid });
 });

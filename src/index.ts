@@ -4,6 +4,7 @@ import { initDb } from './db';
 import { errorHandler } from './middleware/errorHandler';
 
 import authRoutes from './routes/auth';
+import subjectRoutes from './routes/subjects';
 import categoryRoutes from './routes/categories';
 import tagRoutes from './routes/tags';
 import questionRoutes from './routes/questions';
@@ -27,6 +28,7 @@ initDb();
 
 // 路由
 app.use('/api/auth', authRoutes);
+app.use('/api/subjects', subjectRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/tags', tagRoutes);
 app.use('/api/questions', questionRoutes);

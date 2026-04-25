@@ -81,6 +81,15 @@ export function initDb() {
       PRIMARY KEY (question_id, tag_id)
     );
 
+    CREATE TABLE IF NOT EXISTS subjects (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
+    );
+    CREATE INDEX IF NOT EXISTS idx_subjects_user ON subjects(user_id);
+
     CREATE TABLE IF NOT EXISTS review_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       question_id INTEGER NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
@@ -99,4 +108,10 @@ export function initDb() {
     );
     CREATE INDEX IF NOT EXISTS idx_redo_question ON redo_sessions(question_id);
   `);
+
+  // 迁移：为已存在的数据库添加 subject_id 列
+  try { db.exec(`ALTER TABLE categories ADD COLUMN subject_id INTEGER NOT NULL DEFAULT 0`); } catch { /* already exists */ }
+  try { db.exec(`ALTER TABLE questions ADD COLUMN subject_id INTEGER NOT NULL DEFAULT 0`); } catch { /* already exists */ }
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_categories_subject ON categories(subject_id)`); } catch { }
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_questions_subject ON questions(subject_id)`); } catch { }
 }
