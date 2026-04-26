@@ -11,6 +11,7 @@ import tagRoutes from './routes/tags';
 import questionRoutes from './routes/questions';
 import ossRoutes from './routes/oss';
 import exportRoutes from './routes/export';
+import imageRoutes from './routes/images';
 
 const app = express();
 app.use((req, res, next) => {
@@ -35,6 +36,7 @@ app.use('/api/tags', tagRoutes);
 app.use('/api/questions', questionRoutes);
 app.use('/api/oss', ossRoutes);
 app.use('/api/export', exportRoutes);
+app.use('/api/images', imageRoutes);
 
 // 健康检查
 app.get('/health', (_req, res) => {

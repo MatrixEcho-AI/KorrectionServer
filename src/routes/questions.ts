@@ -334,8 +334,9 @@ router.post('/:id/review', (req: AuthRequest, res) => {
   if (!q) return fail(res, 'Question not found', 404);
 
   db.prepare('INSERT INTO review_logs (question_id, action) VALUES (?, ?)').run(questionId, action);
+  const newStatus = action === 'understood' ? 'redo' : 'review';
   db.prepare('UPDATE questions SET status = ?, review_count = review_count + 1, last_review_at = ? WHERE id = ?')
-    .run('review', Date.now(), questionId);
+    .run(newStatus, Date.now(), questionId);
 
   success(res, null);
 });
