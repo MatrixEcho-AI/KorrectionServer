@@ -244,6 +244,37 @@ router.post('/:id/ocr', async (req, res) => {
         }
     }
     (0, response_1.success)(res, null);
+    // 异步生成 AI 总结（包含知识点、解题思路、错因分析）
+    (async () => {
+        try {
+            const allImages = db_1.db
+                .prepare('SELECT * FROM question_images WHERE question_id = ? ORDER BY sort_order, id')
+                .all(questionId);
+            const typeMap = {
+                original_question: '原题',
+                wrong_solution: '错解',
+                reference_answer: '参考答案',
+            };
+            const ocrParts = allImages
+                .map((img) => `【${typeMap[img.image_type] || img.image_type}】\n${img.ocr_text || ''}`)
+                .filter((part) => part.trim().length > 4);
+            if (ocrParts.length === 0)
+                return;
+            const ocrText = ocrParts.join('\n\n');
+            const systemPrompt = '你是一位资深学科老师。请根据以下错题的 OCR 文本，输出一份详细的错题分析总结。总结必须包含以下方面：\n' +
+                '1. 核心知识点：题目涉及的关键概念、公式或定理；\n' +
+                '2. 解题思路：正确的解题步骤和方法概述；\n' +
+                '3. 错因分析：深入分析学生可能犯的错误原因，如概念混淆、计算失误、思路偏差、审题不清、知识点遗漏等；\n' +
+                '4. 改进建议：针对错因给出具体的学习建议。\n' +
+                '输出为纯文本，控制在 400 字以内，语言简洁专业。';
+            const summaryText = await (0, ali_1.callChat)(systemPrompt, ocrText);
+            db_1.db.prepare('UPDATE questions SET reason_text = ? WHERE id = ?').run(summaryText, questionId);
+            console.log('[AI] Summary generated for question', questionId);
+        }
+        catch (err) {
+            console.error('[AI] Summary generation error:', err);
+        }
+    })();
 });
 // POST /api/questions/:id/summary
 router.post('/:id/summary', (req, res) => {

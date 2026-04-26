@@ -112,4 +112,10 @@ export function initDb() {
     );
     CREATE INDEX IF NOT EXISTS idx_redo_question ON redo_sessions(question_id);
   `);
+
+  try {
+    db.exec(`ALTER TABLE question_images ADD COLUMN name TEXT;`);
+  } catch {
+    // 字段已存在，忽略错误
+  }
 }

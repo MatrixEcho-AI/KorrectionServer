@@ -56,7 +56,7 @@ router.get('/', (req: AuthRequest, res) => {
     .prepare(
       `SELECT q.*,
         c.name as category_name,
-        (SELECT json_group_array(json_object('id', qi.id, 'image_url', qi.image_url, 'image_type', qi.image_type, 'ocr_text', qi.ocr_text, 'sort_order', qi.sort_order))
+        (SELECT json_group_array(json_object('id', qi.id, 'image_url', qi.image_url, 'image_type', qi.image_type, 'ocr_text', qi.ocr_text, 'sort_order', qi.sort_order, 'name', qi.name))
          FROM question_images qi WHERE qi.question_id = q.id) as images,
         (SELECT json_group_array(json_object('id', t.id, 'name', t.name))
          FROM question_tags qt JOIN tags t ON qt.tag_id = t.id WHERE qt.question_id = q.id) as tags,
@@ -77,6 +77,27 @@ router.get('/', (req: AuthRequest, res) => {
   });
 
   success(res, { list: rows, total, page, pageSize });
+});
+
+// GET /api/questions/stats
+router.get('/stats', (req: AuthRequest, res) => {
+  const userId = req.userId!;
+  const subjectId = req.query.subject_id ? Number(req.query.subject_id) : undefined;
+
+  let where = 'WHERE user_id = ? AND status != \'deleted\'';
+  const params: any[] = [userId];
+
+  if (subjectId) {
+    where += ' AND subject_id = ?';
+    params.push(subjectId);
+  }
+
+  const rows = db.prepare(`SELECT status, COUNT(*) as c FROM questions ${where} GROUP BY status`).all(...params) as any[];
+  const stats: Record<string, number> = {};
+  for (const row of rows) {
+    stats[row.status] = row.c;
+  }
+  success(res, stats);
 });
 
 // POST /api/questions
@@ -168,6 +189,22 @@ router.post('/:id/images', (req: AuthRequest, res) => {
   success(res, { id: result.lastInsertRowid });
 });
 
+// PUT /api/questions/:id/images/:imageId/ocr
+router.put('/:id/images/:imageId/ocr', (req: AuthRequest, res) => {
+  const questionId = Number(req.params.id);
+  const imageId = Number(req.params.imageId);
+  const { ocr_text } = req.body;
+
+  const q = db.prepare('SELECT * FROM questions WHERE id = ? AND user_id = ?').get(questionId, req.userId!) as any;
+  if (!q) return fail(res, 'Question not found', 404);
+
+  const img = db.prepare('SELECT * FROM question_images WHERE id = ? AND question_id = ?').get(imageId, questionId) as any;
+  if (!img) return fail(res, 'Image not found', 404);
+
+  db.prepare('UPDATE question_images SET ocr_text = ? WHERE id = ?').run(ocr_text ?? '', imageId);
+  success(res, null);
+});
+
 // POST /api/questions/:id/recommend
 router.post('/:id/recommend', async (req: AuthRequest, res) => {
   const questionId = Number(req.params.id);
@@ -222,6 +259,43 @@ router.post('/:id/ocr', async (req: AuthRequest, res) => {
   }
 
   success(res, null);
+
+  // 异步生成 AI 总结（包含知识点、解题思路、错因分析）
+  (async () => {
+    try {
+      const allImages = db
+        .prepare('SELECT * FROM question_images WHERE question_id = ? ORDER BY sort_order, id')
+        .all(questionId) as any[];
+
+      const typeMap: Record<string, string> = {
+        original_question: '原题',
+        wrong_solution: '错解',
+        reference_answer: '参考答案',
+      };
+
+      const ocrParts = allImages
+        .map((img) => `【${typeMap[img.image_type] || img.image_type}】\n${img.ocr_text || ''}`)
+        .filter((part) => part.trim().length > 4);
+
+      if (ocrParts.length === 0) return;
+
+      const ocrText = ocrParts.join('\n\n');
+
+      const systemPrompt =
+        '你是一位资深学科老师。请根据以下错题的 OCR 文本，输出一份详细的错题分析总结。总结必须包含以下方面：\n' +
+        '1. 核心知识点：题目涉及的关键概念、公式或定理；\n' +
+        '2. 解题思路：正确的解题步骤和方法概述；\n' +
+        '3. 错因分析：深入分析学生可能犯的错误原因，如概念混淆、计算失误、思路偏差、审题不清、知识点遗漏等；\n' +
+        '4. 改进建议：针对错因给出具体的学习建议。\n' +
+        '输出为纯文本，控制在 400 字以内，语言简洁专业。';
+
+      const summaryText = await callChat(systemPrompt, ocrText);
+      db.prepare('UPDATE questions SET reason_text = ? WHERE id = ?').run(summaryText, questionId);
+      console.log('[AI] Summary generated for question', questionId);
+    } catch (err) {
+      console.error('[AI] Summary generation error:', err);
+    }
+  })();
 });
 
 // POST /api/questions/:id/summary
@@ -378,6 +452,47 @@ router.get('/:id/redo/session/:sessionId', (req: AuthRequest, res) => {
   success(res, { sessionId: session.id, question: JSON.parse(session.ai_generated_json) });
 });
 
+// POST /api/questions/:id/rollback — 回退状态
+router.post('/:id/rollback', (req: AuthRequest, res) => {
+  const id = Number(req.params.id);
+  const { target_status } = req.body;
+  const validTargets = ['photo', 'summary', 'review', 'redo'];
+  if (!validTargets.includes(target_status)) {
+    return fail(res, 'Invalid target_status');
+  }
+
+  const q = db.prepare('SELECT * FROM questions WHERE id = ? AND user_id = ?').get(id, req.userId!) as any;
+  if (!q) return fail(res, 'Question not found', 404);
+
+  const statusOrder = ['photo', 'summary', 'review', 'redo', 'completed'];
+  const currentIndex = statusOrder.indexOf(q.status);
+  const targetIndex = statusOrder.indexOf(target_status);
+
+  if (targetIndex >= currentIndex) {
+    return fail(res, 'Can only rollback to previous status');
+  }
+
+  // 回退到 summary 之前：清空 reason_text 和 tags
+  if (targetIndex < statusOrder.indexOf('summary')) {
+    db.prepare('UPDATE questions SET reason_text = NULL WHERE id = ?').run(id);
+    db.prepare('DELETE FROM question_tags WHERE question_id = ?').run(id);
+  }
+
+  // 回退到 review 之前：删除 review_logs，重置复习计数
+  if (targetIndex < statusOrder.indexOf('review')) {
+    db.prepare('DELETE FROM review_logs WHERE question_id = ?').run(id);
+    db.prepare('UPDATE questions SET review_count = 0, last_review_at = NULL WHERE id = ?').run(id);
+  }
+
+  // 回退到 redo 之前：删除 redo_sessions
+  if (targetIndex < statusOrder.indexOf('redo')) {
+    db.prepare('DELETE FROM redo_sessions WHERE question_id = ?').run(id);
+  }
+
+  db.prepare('UPDATE questions SET status = ? WHERE id = ?').run(target_status, id);
+  success(res, null);
+});
+
 // DELETE /api/questions/:id — 软删除
 router.delete('/:id', (req: AuthRequest, res) => {
   const id = Number(req.params.id);
@@ -462,10 +577,11 @@ router.post('/:id/images/upload', upload.single('image'), async (req: AuthReques
 
     const maxSort = db.prepare('SELECT MAX(sort_order) as m FROM question_images WHERE question_id = ?').get(questionId) as any;
     const sortOrder = (maxSort?.m || 0) + 1;
+    const imageName = (req.body.name as string) || '';
 
     const result = db
-      .prepare('INSERT INTO question_images (question_id, image_url, image_type, sort_order) VALUES (?, ?, ?, ?)')
-      .run(questionId, imageUrl, imageType, sortOrder);
+      .prepare('INSERT INTO question_images (question_id, image_url, image_type, sort_order, name) VALUES (?, ?, ?, ?, ?)')
+      .run(questionId, imageUrl, imageType, sortOrder, imageName);
 
     console.log('[IMG] DB record inserted', result.lastInsertRowid);
 
