@@ -35,6 +35,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.sendSmsCode = sendSmsCode;
 exports.getOssStsToken = getOssStsToken;
+exports.getOssUploadUrl = getOssUploadUrl;
+exports.uploadBufferToOss = uploadBufferToOss;
 exports.callOcr = callOcr;
 exports.callChat = callChat;
 const config_1 = require("../config");
@@ -119,15 +121,18 @@ async function getOssStsToken(userId) {
         if (!creds) {
             throw new Error('Failed to obtain OSS STS token: no credentials in response');
         }
-        console.log('[STS] SUCCESS');
+        const region = config_1.config.aliOss.region;
+        const bucket = config_1.config.aliOss.bucket;
+        const host = `${bucket}.${region}.aliyuncs.com`;
+        console.log('[STS] SUCCESS', { region, bucket, host });
         return {
             accessKeyId: creds.accessKeyId || '',
             accessKeySecret: creds.accessKeySecret || '',
             securityToken: creds.securityToken || '',
             expiration: creds.expiration || '',
-            region: config_1.config.aliOss.region,
-            bucket: config_1.config.aliOss.bucket,
-            endpoint: config_1.config.aliOss.endpoint,
+            region,
+            bucket,
+            host,
         };
     }
     catch (err) {
@@ -135,6 +140,44 @@ async function getOssStsToken(userId) {
         console.error('[STS] ERROR stack:', err.stack);
         throw err;
     }
+}
+// ============================================================
+// 阿里云 OSS — 生成预签名 PUT URL
+// ============================================================
+async function getOssUploadUrl(userId, key) {
+    const creds = await getOssStsToken(userId);
+    const OSS = await Promise.resolve().then(() => __importStar(require('ali-oss')));
+    const client = new OSS.default({
+        region: creds.region,
+        accessKeyId: creds.accessKeyId,
+        accessKeySecret: creds.accessKeySecret,
+        stsToken: creds.securityToken,
+        bucket: creds.bucket,
+        secure: true,
+    });
+    const url = client.signatureUrl(key, {
+        method: 'PUT',
+        expires: 300,
+        'Content-Type': 'image/jpeg',
+    });
+    console.log('[OSS] signatureUrl generated', { key, url: url.slice(0, 80) + '...' });
+    return { url, host: creds.host };
+}
+// ============================================================
+// 阿里云 OSS — 后端直传
+// ============================================================
+async function uploadBufferToOss(key, buffer) {
+    const OSS = await Promise.resolve().then(() => __importStar(require('ali-oss')));
+    const client = new OSS.default({
+        region: config_1.config.aliOss.region,
+        accessKeyId: config_1.config.aliOss.accessKeyId,
+        accessKeySecret: config_1.config.aliOss.accessKeySecret,
+        bucket: config_1.config.aliOss.bucket,
+        secure: true,
+    });
+    const result = await client.put(key, buffer);
+    console.log('[OSS] uploadBufferToOss success', result.name);
+    return `https://${config_1.config.aliOss.bucket}.${config_1.config.aliOss.region}.aliyuncs.com/${key}`;
 }
 // ============================================================
 // 阿里云百炼 — OCR (多模态 VL)

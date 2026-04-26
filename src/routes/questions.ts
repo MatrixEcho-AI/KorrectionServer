@@ -1,9 +1,12 @@
 import { Router } from 'express';
+import multer from 'multer';
 import { db } from '../db';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { success, fail } from '../utils/response';
-import { callOcr, callChat } from '../utils/ali';
+import { callOcr, callChat, uploadBufferToOss } from '../utils/ali';
 import { config } from '../config';
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 const router = Router();
 router.use(authMiddleware);
@@ -27,8 +30,9 @@ router.get('/', (req: AuthRequest, res) => {
     params.push(subjectId);
   }
   if (status) {
-    where += ' AND q.status = ?';
-    params.push(status);
+    const statuses = status.split(',');
+    where += ` AND q.status IN (${statuses.map(() => '?').join(',')})`;
+    params.push(...statuses);
   }
   if (categoryId) {
     where += ' AND q.category_id = ?';
@@ -137,15 +141,21 @@ router.put('/:id', (req: AuthRequest, res) => {
 router.post('/:id/images', (req: AuthRequest, res) => {
   const questionId = Number(req.params.id);
   const { image_url, image_type, sort_order = 0 } = req.body;
+  console.log('[IMG] START addImage', { questionId, image_url, image_type, sort_order, userId: req.userId });
   if (!image_url || !image_type) {
+    console.log('[IMG] FAIL missing params');
     return fail(res, 'image_url and image_type are required');
   }
   const q = db.prepare('SELECT * FROM questions WHERE id = ? AND user_id = ?').get(questionId, req.userId!) as any;
-  if (!q) return fail(res, 'Question not found', 404);
+  if (!q) {
+    console.log('[IMG] FAIL question not found', { questionId, userId: req.userId });
+    return fail(res, 'Question not found', 404);
+  }
 
   const result = db
     .prepare('INSERT INTO question_images (question_id, image_url, image_type, sort_order) VALUES (?, ?, ?, ?)')
     .run(questionId, image_url, image_type, sort_order);
+  console.log('[IMG] SUCCESS', { id: result.lastInsertRowid });
   success(res, { id: result.lastInsertRowid });
 });
 
@@ -375,6 +385,55 @@ router.delete('/:id/permanent', async (req: AuthRequest, res) => {
 
   db.prepare('DELETE FROM questions WHERE id = ?').run(id);
   success(res, null);
+});
+
+// POST /api/questions/:id/images/upload — 后端直传 OSS
+router.post('/:id/images/upload', upload.single('image'), async (req: AuthRequest, res) => {
+  const questionId = Number(req.params.id);
+  const imageType = req.body.image_type as string;
+  const file = req.file;
+
+  console.log('[IMG] START upload', { questionId, imageType, file: !!file, fileSize: file?.size, ct: req.headers['content-type'], bodyKeys: Object.keys(req.body).join(','), userId: req.userId });
+
+  if (!file) {
+    console.log('[IMG] NO FILE — body:', JSON.stringify(req.body).slice(0, 200));
+    return fail(res, 'Missing image file', 400);
+  }
+  if (!imageType || !['original_question', 'wrong_solution', 'reference_answer'].includes(imageType)) {
+    return fail(res, 'Invalid image_type', 400);
+  }
+
+  const q = db.prepare('SELECT * FROM questions WHERE id = ? AND user_id = ?').get(questionId, req.userId!) as any;
+  if (!q) return fail(res, 'Question not found', 404);
+
+  const key = `questions/user-${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
+
+  try {
+    const imageUrl = await uploadBufferToOss(key, file.buffer);
+    console.log('[IMG] OSS success', imageUrl);
+
+    const maxSort = db.prepare('SELECT MAX(sort_order) as m FROM question_images WHERE question_id = ?').get(questionId) as any;
+    const sortOrder = (maxSort?.m || 0) + 1;
+
+    const result = db
+      .prepare('INSERT INTO question_images (question_id, image_url, image_type, sort_order) VALUES (?, ?, ?, ?)')
+      .run(questionId, imageUrl, imageType, sortOrder);
+
+    console.log('[IMG] DB record inserted', result.lastInsertRowid);
+
+    // 异步触发 OCR，不阻塞响应
+    callOcr(imageUrl)
+      .then((text) => {
+        db.prepare('UPDATE question_images SET ocr_text = ? WHERE id = ?').run(text, result.lastInsertRowid);
+        console.log('[IMG] OCR done', result.lastInsertRowid);
+      })
+      .catch((err) => console.error('[IMG] OCR error:', err));
+
+    success(res, { id: result.lastInsertRowid, image_url: imageUrl });
+  } catch (err: any) {
+    console.error('[IMG] UPLOAD ERROR:', err);
+    fail(res, 'Upload failed: ' + err.message, 500);
+  }
 });
 
 export default router;

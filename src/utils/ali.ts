@@ -71,7 +71,7 @@ export async function getOssStsToken(userId: number): Promise<{
   expiration: string;
   region: string;
   bucket: string;
-  endpoint: string;
+  host: string;
 }> {
   console.log('[STS] START getOssStsToken', { userId });
   try {
@@ -105,21 +105,65 @@ export async function getOssStsToken(userId: number): Promise<{
       throw new Error('Failed to obtain OSS STS token: no credentials in response');
     }
 
-    console.log('[STS] SUCCESS');
+    const region = config.aliOss.region;
+    const bucket = config.aliOss.bucket;
+    const host = `${bucket}.${region}.aliyuncs.com`;
+
+    console.log('[STS] SUCCESS', { region, bucket, host });
     return {
       accessKeyId: creds.accessKeyId || '',
       accessKeySecret: creds.accessKeySecret || '',
       securityToken: creds.securityToken || '',
       expiration: creds.expiration || '',
-      region: config.aliOss.region,
-      bucket: config.aliOss.bucket,
-      endpoint: config.aliOss.endpoint,
+      region,
+      bucket,
+      host,
     };
   } catch (err: any) {
     console.error('[STS] ERROR:', err);
     console.error('[STS] ERROR stack:', err.stack);
     throw err;
   }
+}
+
+// ============================================================
+// 阿里云 OSS — 生成预签名 PUT URL
+// ============================================================
+export async function getOssUploadUrl(userId: number, key: string): Promise<{ url: string; host: string }> {
+  const creds = await getOssStsToken(userId);
+  const OSS = await import('ali-oss');
+  const client = new OSS.default({
+    region: creds.region,
+    accessKeyId: creds.accessKeyId,
+    accessKeySecret: creds.accessKeySecret,
+    stsToken: creds.securityToken,
+    bucket: creds.bucket,
+    secure: true,
+  });
+  const url = client.signatureUrl(key, {
+    method: 'PUT',
+    expires: 300,
+    'Content-Type': 'image/jpeg',
+  });
+  console.log('[OSS] signatureUrl generated', { key, url: url.slice(0, 80) + '...' });
+  return { url, host: creds.host };
+}
+
+// ============================================================
+// 阿里云 OSS — 后端直传
+// ============================================================
+export async function uploadBufferToOss(key: string, buffer: Buffer): Promise<string> {
+  const OSS = await import('ali-oss');
+  const client = new OSS.default({
+    region: config.aliOss.region,
+    accessKeyId: config.aliOss.accessKeyId,
+    accessKeySecret: config.aliOss.accessKeySecret,
+    bucket: config.aliOss.bucket,
+    secure: true,
+  });
+  const result = await client.put(key, buffer);
+  console.log('[OSS] uploadBufferToOss success', result.name);
+  return `https://${config.aliOss.bucket}.${config.aliOss.region}.aliyuncs.com/${key}`;
 }
 
 // ============================================================

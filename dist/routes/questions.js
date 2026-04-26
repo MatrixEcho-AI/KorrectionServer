@@ -32,13 +32,18 @@ var __importStar = (this && this.__importStar) || (function () {
         return result;
     };
 })();
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
+const multer_1 = __importDefault(require("multer"));
 const db_1 = require("../db");
 const auth_1 = require("../middleware/auth");
 const response_1 = require("../utils/response");
 const ali_1 = require("../utils/ali");
 const config_1 = require("../config");
+const upload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 const router = (0, express_1.Router)();
 router.use(auth_1.authMiddleware);
 // GET /api/questions
@@ -58,8 +63,9 @@ router.get('/', (req, res) => {
         params.push(subjectId);
     }
     if (status) {
-        where += ' AND q.status = ?';
-        params.push(status);
+        const statuses = status.split(',');
+        where += ` AND q.status IN (${statuses.map(() => '?').join(',')})`;
+        params.push(...statuses);
     }
     if (categoryId) {
         where += ' AND q.category_id = ?';
@@ -161,15 +167,20 @@ router.put('/:id', (req, res) => {
 router.post('/:id/images', (req, res) => {
     const questionId = Number(req.params.id);
     const { image_url, image_type, sort_order = 0 } = req.body;
+    console.log('[IMG] START addImage', { questionId, image_url, image_type, sort_order, userId: req.userId });
     if (!image_url || !image_type) {
+        console.log('[IMG] FAIL missing params');
         return (0, response_1.fail)(res, 'image_url and image_type are required');
     }
     const q = db_1.db.prepare('SELECT * FROM questions WHERE id = ? AND user_id = ?').get(questionId, req.userId);
-    if (!q)
+    if (!q) {
+        console.log('[IMG] FAIL question not found', { questionId, userId: req.userId });
         return (0, response_1.fail)(res, 'Question not found', 404);
+    }
     const result = db_1.db
         .prepare('INSERT INTO question_images (question_id, image_url, image_type, sort_order) VALUES (?, ?, ?, ?)')
         .run(questionId, image_url, image_type, sort_order);
+    console.log('[IMG] SUCCESS', { id: result.lastInsertRowid });
     (0, response_1.success)(res, { id: result.lastInsertRowid });
 });
 // POST /api/questions/:id/recommend
@@ -373,6 +384,46 @@ router.delete('/:id/permanent', async (req, res) => {
     }
     db_1.db.prepare('DELETE FROM questions WHERE id = ?').run(id);
     (0, response_1.success)(res, null);
+});
+// POST /api/questions/:id/images/upload — 后端直传 OSS
+router.post('/:id/images/upload', upload.single('image'), async (req, res) => {
+    const questionId = Number(req.params.id);
+    const imageType = req.body.image_type;
+    const file = req.file;
+    console.log('[IMG] START upload', { questionId, imageType, file: !!file, fileSize: file?.size, ct: req.headers['content-type'], bodyKeys: Object.keys(req.body).join(','), userId: req.userId });
+    if (!file) {
+        console.log('[IMG] NO FILE — body:', JSON.stringify(req.body).slice(0, 200));
+        return (0, response_1.fail)(res, 'Missing image file', 400);
+    }
+    if (!imageType || !['original_question', 'wrong_solution', 'reference_answer'].includes(imageType)) {
+        return (0, response_1.fail)(res, 'Invalid image_type', 400);
+    }
+    const q = db_1.db.prepare('SELECT * FROM questions WHERE id = ? AND user_id = ?').get(questionId, req.userId);
+    if (!q)
+        return (0, response_1.fail)(res, 'Question not found', 404);
+    const key = `questions/user-${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
+    try {
+        const imageUrl = await (0, ali_1.uploadBufferToOss)(key, file.buffer);
+        console.log('[IMG] OSS success', imageUrl);
+        const maxSort = db_1.db.prepare('SELECT MAX(sort_order) as m FROM question_images WHERE question_id = ?').get(questionId);
+        const sortOrder = (maxSort?.m || 0) + 1;
+        const result = db_1.db
+            .prepare('INSERT INTO question_images (question_id, image_url, image_type, sort_order) VALUES (?, ?, ?, ?)')
+            .run(questionId, imageUrl, imageType, sortOrder);
+        console.log('[IMG] DB record inserted', result.lastInsertRowid);
+        // 异步触发 OCR，不阻塞响应
+        (0, ali_1.callOcr)(imageUrl)
+            .then((text) => {
+            db_1.db.prepare('UPDATE question_images SET ocr_text = ? WHERE id = ?').run(text, result.lastInsertRowid);
+            console.log('[IMG] OCR done', result.lastInsertRowid);
+        })
+            .catch((err) => console.error('[IMG] OCR error:', err));
+        (0, response_1.success)(res, { id: result.lastInsertRowid, image_url: imageUrl });
+    }
+    catch (err) {
+        console.error('[IMG] UPLOAD ERROR:', err);
+        (0, response_1.fail)(res, 'Upload failed: ' + err.message, 500);
+    }
 });
 exports.default = router;
 //# sourceMappingURL=questions.js.map
