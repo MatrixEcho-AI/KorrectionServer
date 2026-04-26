@@ -304,7 +304,7 @@ router.post('/:id/redo', async (req, res) => {
         }
         path = names.join(' / ');
     }
-    const systemPrompt = '你是一位资深学科老师。根据以下错题文本、错题原因、所属科目与章节，生成1道相似考点的单选题。输出严格JSON：{"question":"题干","options":["A. ...","B. ...","C. ...","D. ..."],"answer":"B","explanation":"解析文字"}';
+    const systemPrompt = '你是一位资深学科老师。根据以下错题文本、错题原因、所属科目与章节，生成1道相似考点的单选题。请使用中文生成题目和解析，除非原始题目明显是英语/外语类考试题。输出严格JSON：{"question":"题干","options":["A. ...","B. ...","C. ...","D. ..."],"answer":"B","explanation":"解析文字"}';
     const userPrompt = `科目与章节：${path}\n错题文本：${ocrText || '无 OCR 文本'}\n错题原因：${q.reason_text || '未填写'}`;
     try {
         const aiText = await (0, ali_1.callChat)(systemPrompt, userPrompt);
