@@ -15,6 +15,7 @@ const tags_1 = __importDefault(require("./routes/tags"));
 const questions_1 = __importDefault(require("./routes/questions"));
 const oss_1 = __importDefault(require("./routes/oss"));
 const export_1 = __importDefault(require("./routes/export"));
+const images_1 = __importDefault(require("./routes/images"));
 const app = (0, express_1.default)();
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
@@ -36,6 +37,7 @@ app.use('/api/tags', tags_1.default);
 app.use('/api/questions', questions_1.default);
 app.use('/api/oss', oss_1.default);
 app.use('/api/export', export_1.default);
+app.use('/api/images', images_1.default);
 // 健康检查
 app.get('/health', (_req, res) => {
     res.json({ status: 'ok', timestamp: Date.now() });
