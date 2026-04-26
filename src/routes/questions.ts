@@ -102,14 +102,15 @@ router.get('/stats', (req: AuthRequest, res) => {
 
 // POST /api/questions
 router.post('/', (req: AuthRequest, res) => {
-  const { category_id, subject_id } = req.body;
+  const { category_id, subject_id, name } = req.body;
   if (!category_id) {
     return fail(res, 'category_id is required');
   }
   const subjectId = subject_id ? Number(subject_id) : 0;
+  const questionName = name ? String(name).trim() : null;
   const result = db
-    .prepare('INSERT INTO questions (user_id, category_id, subject_id, status) VALUES (?, ?, ?, ?)')
-    .run(req.userId!, category_id, subjectId, 'photo');
+    .prepare('INSERT INTO questions (user_id, category_id, subject_id, status, name) VALUES (?, ?, ?, ?, ?)')
+    .run(req.userId!, category_id, subjectId, 'photo', questionName);
   success(res, { id: result.lastInsertRowid });
 });
 
@@ -138,7 +139,7 @@ router.get('/:id', (req: AuthRequest, res) => {
 // PUT /api/questions/:id
 router.put('/:id', (req: AuthRequest, res) => {
   const id = Number(req.params.id);
-  const { status, category_id, reason_text } = req.body;
+  const { status, category_id, reason_text, name } = req.body;
 
   const q = db.prepare('SELECT * FROM questions WHERE id = ? AND user_id = ?').get(id, req.userId!) as any;
   if (!q) return fail(res, 'Question not found', 404);
@@ -157,6 +158,10 @@ router.put('/:id', (req: AuthRequest, res) => {
   if (reason_text !== undefined) {
     fields.push('reason_text = ?');
     values.push(reason_text);
+  }
+  if (name !== undefined) {
+    fields.push('name = ?');
+    values.push(String(name).trim());
   }
 
   if (fields.length === 0) {
@@ -235,6 +240,35 @@ router.post('/:id/recommend', async (req: AuthRequest, res) => {
     console.error('Recommend error:', err);
     success(res, { category_id: 0, tag_ids: [] });
   }
+});
+
+// POST /api/questions/:id/auto-summary — 后台自动生成错题原因
+router.post('/:id/auto-summary', (req: AuthRequest, res) => {
+  const id = Number(req.params.id);
+  const q = db.prepare('SELECT * FROM questions WHERE id = ? AND user_id = ?').get(id, req.userId!) as any;
+  if (!q) return fail(res, 'Question not found', 404);
+  if (q.reason_text) return fail(res, 'Already has reason');
+
+  db.prepare('UPDATE questions SET reason_status = ? WHERE id = ?').run('generating', id);
+  success(res, null);
+
+  // 异步生成
+  setImmediate(async () => {
+    try {
+      const images = db
+        .prepare("SELECT ocr_text FROM question_images WHERE question_id = ? AND image_type = 'original_question' ORDER BY sort_order")
+        .all(id) as any[];
+      const ocrText = images.map((i: any) => i.ocr_text).filter(Boolean).join('\n');
+
+      const systemPrompt = '你是学习助手。根据错题OCR文本，分析并总结学生做错的原因。用简洁的中文回答，控制在100字以内。直接输出原因文本，无需JSON格式。';
+      const reason = await callChat(systemPrompt, ocrText.slice(0, 1200) || '无OCR文本');
+
+      db.prepare('UPDATE questions SET reason_text = ?, reason_status = NULL WHERE id = ?').run(reason.trim(), id);
+    } catch (err) {
+      console.error('Auto-summary error:', err);
+      db.prepare('UPDATE questions SET reason_status = NULL WHERE id = ?').run(id);
+    }
+  });
 });
 
 // POST /api/questions/:id/ocr

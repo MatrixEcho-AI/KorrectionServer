@@ -118,4 +118,16 @@ export function initDb() {
   } catch {
     // 字段已存在，忽略错误
   }
+
+  try {
+    db.exec(`ALTER TABLE questions ADD COLUMN name TEXT;`);
+  } catch {
+    // 字段已存在，忽略错误
+  }
+
+  try {
+    db.exec(`ALTER TABLE questions ADD COLUMN reason_status TEXT;`);
+  } catch {
+    // 字段已存在，忽略错误
+  }
 }
