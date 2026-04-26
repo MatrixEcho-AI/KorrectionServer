@@ -42,6 +42,7 @@ const db_1 = require("../db");
 const auth_1 = require("../middleware/auth");
 const response_1 = require("../utils/response");
 const ali_1 = require("../utils/ali");
+const redoWorker_1 = require("../utils/redoWorker");
 const config_1 = require("../config");
 const upload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 const router = (0, express_1.Router)();
@@ -83,7 +84,9 @@ router.get('/', (req, res) => {
         (SELECT json_group_array(json_object('id', qi.id, 'image_url', qi.image_url, 'image_type', qi.image_type, 'ocr_text', qi.ocr_text, 'sort_order', qi.sort_order))
          FROM question_images qi WHERE qi.question_id = q.id) as images,
         (SELECT json_group_array(json_object('id', t.id, 'name', t.name))
-         FROM question_tags qt JOIN tags t ON qt.tag_id = t.id WHERE qt.question_id = q.id) as tags
+         FROM question_tags qt JOIN tags t ON qt.tag_id = t.id WHERE qt.question_id = q.id) as tags,
+        (SELECT json_group_array(json_object('id', rs.id, 'question', json(rs.ai_generated_json)))
+         FROM redo_sessions rs WHERE rs.question_id = q.id AND rs.user_answer IS NULL ORDER BY rs.created_at DESC) as pending_redos
       FROM questions q
       LEFT JOIN categories c ON q.category_id = c.id
       ${where}
@@ -102,6 +105,12 @@ router.get('/', (req, res) => {
         }
         catch {
             r.tags = [];
+        }
+        try {
+            r.pending_redos = JSON.parse(r.pending_redos || '[]');
+        }
+        catch {
+            r.pending_redos = [];
         }
     });
     (0, response_1.success)(res, { list: rows, total, page, pageSize });
@@ -305,6 +314,10 @@ router.post('/:id/redo', async (req, res) => {
             .prepare('INSERT INTO redo_sessions (question_id, ai_generated_json) VALUES (?, ?)')
             .run(questionId, JSON.stringify(parsed));
         db_1.db.prepare('UPDATE questions SET status = ? WHERE id = ?').run('redo', questionId);
+        const remaining = db_1.db.prepare('SELECT COUNT(*) as c FROM redo_sessions WHERE question_id = ? AND user_answer IS NULL').get(questionId);
+        if (remaining.c < 3) {
+            (0, redoWorker_1.queueRedoGeneration)(questionId);
+        }
         (0, response_1.success)(res, { sessionId: result.lastInsertRowid, question: parsed });
     }
     catch (err) {
@@ -327,7 +340,36 @@ router.post('/:id/redo/submit', (req, res) => {
     const parsed = JSON.parse(session.ai_generated_json);
     const isCorrect = parsed.answer?.toString().trim().toUpperCase() === answer.toString().trim().toUpperCase();
     db_1.db.prepare('UPDATE redo_sessions SET user_answer = ?, is_correct = ? WHERE id = ?').run(answer, isCorrect ? 1 : 0, session_id);
+    const remaining = db_1.db.prepare('SELECT COUNT(*) as c FROM redo_sessions WHERE question_id = ? AND user_answer IS NULL').get(questionId);
+    if (remaining.c < 3) {
+        (0, redoWorker_1.queueRedoGeneration)(questionId);
+    }
     (0, response_1.success)(res, { isCorrect, correctAnswer: parsed.answer, explanation: parsed.explanation });
+});
+// GET /api/questions/:id/redo/pending
+router.get('/:id/redo/pending', (req, res) => {
+    const questionId = Number(req.params.id);
+    const q = db_1.db.prepare('SELECT * FROM questions WHERE id = ? AND user_id = ?').get(questionId, req.userId);
+    if (!q)
+        return (0, response_1.fail)(res, 'Question not found', 404);
+    const sessions = db_1.db
+        .prepare('SELECT id, ai_generated_json, created_at FROM redo_sessions WHERE question_id = ? AND user_answer IS NULL ORDER BY created_at DESC')
+        .all(questionId);
+    const list = sessions.map((s) => ({
+        id: s.id,
+        question: JSON.parse(s.ai_generated_json),
+        createdAt: s.created_at,
+    }));
+    (0, response_1.success)(res, list);
+});
+// GET /api/questions/:id/redo/session/:sessionId
+router.get('/:id/redo/session/:sessionId', (req, res) => {
+    const sessionId = Number(req.params.sessionId);
+    const questionId = Number(req.params.id);
+    const session = db_1.db.prepare('SELECT * FROM redo_sessions WHERE id = ? AND question_id = ?').get(sessionId, questionId);
+    if (!session)
+        return (0, response_1.fail)(res, 'Session not found', 404);
+    (0, response_1.success)(res, { sessionId: session.id, question: JSON.parse(session.ai_generated_json) });
 });
 // DELETE /api/questions/:id — 软删除
 router.delete('/:id', (req, res) => {

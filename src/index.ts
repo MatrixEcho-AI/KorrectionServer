@@ -2,6 +2,7 @@ import express from 'express';
 import { config } from './config';
 import { initDb } from './db';
 import { errorHandler } from './middleware/errorHandler';
+import { startRedoWorker } from './utils/redoWorker';
 
 import authRoutes from './routes/auth';
 import subjectRoutes from './routes/subjects';
@@ -41,6 +42,8 @@ app.get('/health', (_req, res) => {
 });
 
 app.use(errorHandler);
+
+startRedoWorker();
 
 app.listen(config.port, () => {
   console.log(`KorrectionServer running on http://localhost:${config.port}`);

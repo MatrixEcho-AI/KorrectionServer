@@ -7,6 +7,7 @@ const express_1 = __importDefault(require("express"));
 const config_1 = require("./config");
 const db_1 = require("./db");
 const errorHandler_1 = require("./middleware/errorHandler");
+const redoWorker_1 = require("./utils/redoWorker");
 const auth_1 = __importDefault(require("./routes/auth"));
 const subjects_1 = __importDefault(require("./routes/subjects"));
 const categories_1 = __importDefault(require("./routes/categories"));
@@ -40,6 +41,7 @@ app.get('/health', (_req, res) => {
     res.json({ status: 'ok', timestamp: Date.now() });
 });
 app.use(errorHandler_1.errorHandler);
+(0, redoWorker_1.startRedoWorker)();
 app.listen(config_1.config.port, () => {
     console.log(`KorrectionServer running on http://localhost:${config_1.config.port}`);
 });

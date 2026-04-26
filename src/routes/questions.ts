@@ -4,6 +4,7 @@ import { db } from '../db';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { success, fail } from '../utils/response';
 import { callOcr, callChat, uploadBufferToOss } from '../utils/ali';
+import { queueRedoGeneration } from '../utils/redoWorker';
 import { config } from '../config';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -53,7 +54,9 @@ router.get('/', (req: AuthRequest, res) => {
         (SELECT json_group_array(json_object('id', qi.id, 'image_url', qi.image_url, 'image_type', qi.image_type, 'ocr_text', qi.ocr_text, 'sort_order', qi.sort_order))
          FROM question_images qi WHERE qi.question_id = q.id) as images,
         (SELECT json_group_array(json_object('id', t.id, 'name', t.name))
-         FROM question_tags qt JOIN tags t ON qt.tag_id = t.id WHERE qt.question_id = q.id) as tags
+         FROM question_tags qt JOIN tags t ON qt.tag_id = t.id WHERE qt.question_id = q.id) as tags,
+        (SELECT json_group_array(json_object('id', rs.id, 'question', json(rs.ai_generated_json)))
+         FROM redo_sessions rs WHERE rs.question_id = q.id AND rs.user_answer IS NULL ORDER BY rs.created_at DESC) as pending_redos
       FROM questions q
       LEFT JOIN categories c ON q.category_id = c.id
       ${where}
@@ -65,6 +68,7 @@ router.get('/', (req: AuthRequest, res) => {
   rows.forEach((r) => {
     try { r.images = JSON.parse(r.images || '[]'); } catch { r.images = []; }
     try { r.tags = JSON.parse(r.tags || '[]'); } catch { r.tags = []; }
+    try { r.pending_redos = JSON.parse(r.pending_redos || '[]'); } catch { r.pending_redos = []; }
   });
 
   success(res, { list: rows, total, page, pageSize });
@@ -302,6 +306,12 @@ router.post('/:id/redo', async (req: AuthRequest, res) => {
       .run(questionId, JSON.stringify(parsed));
 
     db.prepare('UPDATE questions SET status = ? WHERE id = ?').run('redo', questionId);
+
+    const remaining = db.prepare('SELECT COUNT(*) as c FROM redo_sessions WHERE question_id = ? AND user_answer IS NULL').get(questionId) as any;
+    if (remaining.c < 3) {
+      queueRedoGeneration(questionId);
+    }
+
     success(res, { sessionId: result.lastInsertRowid, question: parsed });
   } catch (err: any) {
     console.error('Redo generation error:', err);
@@ -327,7 +337,40 @@ router.post('/:id/redo/submit', (req: AuthRequest, res) => {
 
   db.prepare('UPDATE redo_sessions SET user_answer = ?, is_correct = ? WHERE id = ?').run(answer, isCorrect ? 1 : 0, session_id);
 
+  const remaining = db.prepare('SELECT COUNT(*) as c FROM redo_sessions WHERE question_id = ? AND user_answer IS NULL').get(questionId) as any;
+  if (remaining.c < 3) {
+    queueRedoGeneration(questionId);
+  }
+
   success(res, { isCorrect, correctAnswer: parsed.answer, explanation: parsed.explanation });
+});
+
+// GET /api/questions/:id/redo/pending
+router.get('/:id/redo/pending', (req: AuthRequest, res) => {
+  const questionId = Number(req.params.id);
+  const q = db.prepare('SELECT * FROM questions WHERE id = ? AND user_id = ?').get(questionId, req.userId!) as any;
+  if (!q) return fail(res, 'Question not found', 404);
+
+  const sessions = db
+    .prepare('SELECT id, ai_generated_json, created_at FROM redo_sessions WHERE question_id = ? AND user_answer IS NULL ORDER BY created_at DESC')
+    .all(questionId) as any[];
+
+  const list = sessions.map((s: any) => ({
+    id: s.id,
+    question: JSON.parse(s.ai_generated_json),
+    createdAt: s.created_at,
+  }));
+
+  success(res, list);
+});
+
+// GET /api/questions/:id/redo/session/:sessionId
+router.get('/:id/redo/session/:sessionId', (req: AuthRequest, res) => {
+  const sessionId = Number(req.params.sessionId);
+  const questionId = Number(req.params.id);
+  const session = db.prepare('SELECT * FROM redo_sessions WHERE id = ? AND question_id = ?').get(sessionId, questionId) as any;
+  if (!session) return fail(res, 'Session not found', 404);
+  success(res, { sessionId: session.id, question: JSON.parse(session.ai_generated_json) });
 });
 
 // DELETE /api/questions/:id — 软删除
