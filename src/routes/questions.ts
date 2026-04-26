@@ -23,8 +23,13 @@ router.get('/', (req: AuthRequest, res) => {
   const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 20));
   const offset = (page - 1) * pageSize;
 
-  let where = 'WHERE q.user_id = ? AND q.status != \'deleted\'';
+  let where = 'WHERE q.user_id = ?';
   const params: any[] = [userId];
+
+  // 默认过滤已删除状态，但如果用户主动查询 deleted 则不过滤
+  if (!status || !status.split(',').includes('deleted')) {
+    where += " AND q.status != 'deleted'";
+  }
 
   if (subjectId) {
     where += ' AND q.subject_id = ?';
