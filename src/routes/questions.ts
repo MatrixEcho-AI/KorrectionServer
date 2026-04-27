@@ -19,6 +19,7 @@ router.get('/', (req: AuthRequest, res) => {
   const categoryId = req.query.category_id ? Number(req.query.category_id) : undefined;
   const tagId = req.query.tag_id ? Number(req.query.tag_id) : undefined;
   const subjectId = req.query.subject_id ? Number(req.query.subject_id) : undefined;
+  const keyword = (req.query.keyword as string)?.trim();
   const page = Math.max(1, Number(req.query.page) || 1);
   const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 20));
   const offset = (page - 1) * pageSize;
@@ -48,8 +49,15 @@ router.get('/', (req: AuthRequest, res) => {
     where += ' AND EXISTS (SELECT 1 FROM question_tags qt WHERE qt.question_id = q.id AND qt.tag_id = ?)';
     params.push(tagId);
   }
+  if (keyword) {
+    const k = `%${keyword}%`;
+    where += ` AND (q.name LIKE ? OR q.reason_text LIKE ? OR c.name LIKE ?
+      OR EXISTS (SELECT 1 FROM question_images qi WHERE qi.question_id = q.id AND qi.ocr_text LIKE ?)
+      OR EXISTS (SELECT 1 FROM question_tags qt JOIN tags t ON qt.tag_id = t.id WHERE qt.question_id = q.id AND t.name LIKE ?))`;
+    params.push(k, k, k, k, k);
+  }
 
-  const totalRow = db.prepare(`SELECT COUNT(*) as c FROM questions q ${where}`).get(...params) as any;
+  const totalRow = db.prepare(`SELECT COUNT(*) as c FROM questions q LEFT JOIN categories c ON q.category_id = c.id ${where}`).get(...params) as any;
   const total = totalRow.c;
 
   const rows = db
